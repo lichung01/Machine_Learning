@@ -1,0 +1,210 @@
+---
+title: "Machine Learning - Course Project"
+author: "HLC"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 4
+    fig_width: 7
+---
+
+```{r, include=FALSE}
+library(ggplot2)
+library(lattice)
+library(MASS)
+library(foreach)
+library(iterators)
+library(parallel)
+library(doParallel)
+library(caret)
+library(randomForest)
+library(rpart)
+```
+##1. Executive Summary  
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, we will use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of this project is to predict the manner in which the group did the exercise. This is the "classe" variable in the training set. We will use 39 variables to predict with, and detail how to build the best model, cross validation, sample error and why the model is best choice. We will also use the prediction model to predict 20 different test cases.
+
+##2. Exploration Data Analysis  
+- The training data for this project are available for download from this link:  [plm-training](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv)
+
+- The test data for this project are available for download from this link:  [pml-testing](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+Assuming that the datasets are downloaded and save into my local working directory, "Machine_Learning" (~/Machine_Learning). 
+```{r, echo=TRUE}
+# Set seed to allow reproducible results
+set.seed(6789)
+# Data in training set containing Null and "DIV/0!" values will be replaced with "NA".
+# Load the training dataset and replace Null and "DIV/0!" with "NA"
+train.dataset <- read.csv("~/MOOC/Machine_Learning/pml-training.csv", na.strings=c("NA","#DIV/0!", ""))
+
+# Data in test set containing Null and "DIV/0!" values will be replaced with "NA".
+# Load the testing dataset and replace Null and "DIV/0!" with "NA"
+test.dataset <- read.csv('~/MOOC/Machine_Learning/pml-testing.csv', na.strings=c("NA","#DIV/0!", ""))
+
+# Check size of training and test dataset
+dim(train.dataset)
+dim(test.dataset)
+```
+
+##3. Cleaning up Dataset for Analysis  
+```{r, echo=TRUE}
+# Remove colums with all NA values
+train.dataset<-train.dataset[,colSums(is.na(train.dataset)) == 0]
+test.dataset <-test.dataset[,colSums(is.na(test.dataset)) == 0]
+```
+
+###Cleaning up of column dataset
+In column 1 to column 7, the variables under columns "X", "user_name", "raw_timestamp_part1", "raw_timestamp_part2", "cvdt_timestamp", "new_window" and "num_window" are not highly significant in predicting the "Classe" variable of the dataset. Hence we remove the irrelevant column variables from both training and testing dataset.
+
+```{r, echo=TRUE}
+# We remove columns 1 -7 as it is not required for the training and test dataset. Theere are 53 columns remaining in the dataset.
+train.dataset <-train.dataset[,c(8:60)]
+test.dataset <-test.dataset[,c(8:60)]
+```
+
+##4 Remove all high correlation variables
+```{r, message=FALSE}
+# Calculating the Correlation
+cor_train_matrix <- cor(na.omit(train.dataset[sapply(train.dataset, is.numeric)]))
+```
+
+From the result, there is no difference with the final result after removal of high correlation variables equal or more than 80%. Hence we will remove all high correlation variables equal or more than 80%
+
+```{r, message=FALSE}
+# Remove all high correlation which are more than 80%.
+rm_cor_train <- findCorrelation(cor_train_matrix, cutoff = .80, verbose = TRUE)
+training_dataset <- train.dataset[,-rm_cor_train]
+dim(training_dataset)
+unique(training_dataset$classe)
+```
+
+After cleaning of training dataset, we now have 19622 samples with 40 column vaiables. This training_dataset will be used to build our prediction model.
+
+##5 Preparing to split the dataset for training and testing
+```{r, message=FALSE}
+# Next we will split dataset 70% for training and 30% for testing.
+part.tr <- createDataPartition(y = training_dataset$classe, p=0.7,list=FALSE)
+part.training <- training_dataset[part.tr,]
+part.testing <- training_dataset[-part.tr,]
+
+dim(part.training)
+dim(part.testing)
+
+# Plot the Levels of the variable classe in the training dataset
+plot(part.training$classe, col=5, main="Classe Level Frequency (training dataset)", 
+     xlab="Classe Levels", ylab= "Frequency")
+```
+
+##6 Train the Model
+
+We use Decision Tree(tree), Random forest(rf), and Linear Discriminant Analysis(lda) algorithm to train the model to obtain the highest accuracy with the available 40 predictors.
+
+##7 Fitting the Model Selection
+```{r, message=FALSE}
+# Perform Decision Tree model
+fit.model.tree <- train(classe ~ .,method = "rpart",data = part.training)
+# Perform Linear Discriminant Analysis model
+fit.model.lda <-train(classe ~ ., method = 'lda',data = part.training)
+# Perform Random forest model. This train model will take more than 60 minutes depending on your hardware for training process.
+fit.model.rf <- train(classe ~ .,  method = 'rf',data = part.training)
+
+# Print result using Random Forest
+print(fit.model.rf)
+```
+###Comparing the resuls from Decision Tree, Linea Discriminant Analysis and Random Forest
+The results using the Random Forest algorithm yields the highest accuracy with 40 predictors. It is 98.66% compare to 50% using Tree algorithm and 64% using Linear Discriminant Analysis. See  [Appendix-1.1](#appendix-1.1) for the results of Decision Tree and Liner Discreiminant Analysis.
+
+##8 Cross validation check
+
+Although the Random Forest model seems to produce the best result, but we still need to perform cross validation also to prevent overfitting of our final model. The goal of cross-validation is to define a data set to "test" the model in the training phase in order to limit overfitting and give an insight on how the model will generalize to test data set.
+
+We will use K-fold cross-validation to perform this analysis. Taking into account the data size (about 13,737 observations), the number of fold is set to 5 for calculation performance while maintaining an acceptable level of bias. We use caret package's train() function. Cross-validation will be performed with method set to 'cv' and the number of folds is set to 5 to train the model.
+
+```{r}
+# Perform Random forest model. This train model will take more than 20 minutes depending on your hardware for training process.
+k.fit.model.rf <- train(classe ~ .,  method = 'rf',data=part.training, 
+                        trControl = trainControl(method="cv",number=5, allowParallel = TRUE) )
+print(k.fit.model.rf)
+
+#Plot Resampling Results - Cross Validation.
+plot(k.fit.model.rf, main="Resampling Results - Cross Validation")
+
+```
+
+We adopt the final model using Random Forest (fit.model.rf) with highest accuracy of 98.88%.
+
+##9 Prediction using testing data
+
+Given that we split earlier the dataset into two sets (training and testing), we have completed training our selected model (Random Forest) with training data (initial 70%). We will conduct model training using the test dataset (remaining 30%).
+
+```{r}
+#Using our best fit model to predict on test dataset 
+prediction_randomforest <- predict(k.fit.model.rf, part.testing)
+confusionMatrix(part.testing$classe, prediction_randomforest)
+```
+
+
+##10 Determine the accuracy of prediction
+```{r, message=FALSE}
+postResample(prediction_randomforest, part.testing$classe)
+```
+
+### Expected out of sample error result
+
+We noted the accuracy of predictions is up to 99%. Hence the expected out of sample error is 1%.
+
+##11 Using best model to predict 20 observations in test dataset provided
+
+The Random Forest Model (after fine tuning with cross validation) is used to predict 20 test observations in the test data provided in the project.
+
+```{r, message=FALSE}
+prediction_result <- predict(k.fit.model.rf, test.dataset)
+print(prediction_result)
+```
+
+
+##12 Conclusion
+
+In summary, Random Forest algorithm performed better than Decision Trees or Linear Discriminant Analysis. Using 40 predictor variables from the training dataset, the Random Forest model is 99% accurate comparing to 51.7% accuracy using Decision Tree model and 64.3% accuracy using Linear Discriminant Analysis model. The random Forest model has the best fit with highest accuracy of 99%. The expected out of sample error is estimated at 1% for predictions made against the cross validation dataset. Our test dataset contains 20 observations. Given an accuracy of 99% using our cross-validation data, we can expect very few or none of the test samples to be classified wrongly. We deduce that Random Forest algorithm is the best fit and works best for our Weight Lifting Exercise Analysis Project.
+
+
+
+\pagebreak
+   
+##Appendix-1.1
+
+###Results of Decision Tree model
+```{r}
+print(fit.model.tree)
+```
+
+###Results of Linear Discriminant Analysis model
+```{r}
+print(fit.model.lda)
+```
+
+##Appendix-1.2
+
+###Create Function pml_write_files
+```{r}
+pml_write_files = function(x){
+    n = length(x)
+    for(i in 1:n){
+        filename = paste0("problem_id_",i,".txt")
+        write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+}
+
+```
+
+###Predicting on 20 test cases using our prediction model. It will generate 20 text files at working directory(~~/MOOC/Machine_Learning)
+```{r}
+
+prediction_result <- predict(k.fit.model.rf, test.dataset);
+print(prediction_result);
+
+#Write result to 20 text files
+pml_write_files(as.vector(prediction_result))
+```
+
